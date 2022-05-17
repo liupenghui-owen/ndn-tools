@@ -88,6 +88,18 @@ private:
    * is false, this is usually not a fatal error for the pipeline
    */
   bool m_hasFailure = false;
+  
+  struct _SegmentInfo
+  {
+	time::steady_clock::time_point timeSent;
+  };
+  
+  std::unordered_map<uint64_t, _SegmentInfo> m_segmentInfo; ///< keeps all the internal information
+  time::nanoseconds m_assumeTimeElapsed = 0_ns;
+  time::nanoseconds m_rttMin = time::nanoseconds::max();
+  time::nanoseconds m_rttMax = time::nanoseconds::min();
+  
+  
 };
 
 } // namespace ndn::chunks

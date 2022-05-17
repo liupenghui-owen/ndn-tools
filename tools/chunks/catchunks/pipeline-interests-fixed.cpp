@@ -101,6 +101,7 @@ PipelineInterestsFixed::fetchNextSegment(std::size_t pipeNo)
 
   BOOST_ASSERT(!m_segmentFetchers[pipeNo].first || !m_segmentFetchers[pipeNo].first->isRunning());
   m_segmentFetchers[pipeNo] = make_pair(fetcher, nextSegmentNo);
+  m_segmentInfo.at(nextSegmentNo).timeSent = time::steady_clock::now();
 
   return true;
 }
@@ -112,7 +113,7 @@ PipelineInterestsFixed::doCancel()
     if (fetcher.first)
       fetcher.first->cancel();
   }
-
+  m_segmentInfo.clear();
   m_segmentFetchers.clear();
 }
 
@@ -129,6 +130,24 @@ PipelineInterestsFixed::handleData(const Interest& interest, const Data& data, s
     std::cerr << "Received segment #" << getSegmentFromPacket(data) << "\n";
 
   onData(data);
+  
+  uint64_t recvSegNo = getSegmentFromPacket(data);
+  auto segIt = m_segmentInfo.find(recvSegNo);
+  if (segIt == m_segmentInfo.end()) {
+    return; 
+  }
+
+  _SegmentInfo& segInfo = segIt->second;
+  time::nanoseconds rtt = time::steady_clock::now() - segInfo.timeSent;
+  m_assumeTimeElapsed += rtt; 
+  m_rttMax = std::max(rtt, m_rttMax);
+  m_rttMin = std::min(rtt, m_rttMin);
+
+  if (m_options.isVerbose) {
+    std::cerr << "Received segment #" << recvSegNo
+              << ", rtt=" << rtt.count() / 1e6 << "ms\n";
+	
+  }
 
   if (!m_hasFinalBlockId && data.getFinalBlock()) {
     m_lastSegmentNo = data.getFinalBlock()->toSegment();
@@ -141,6 +160,11 @@ PipelineInterestsFixed::handleData(const Interest& interest, const Data& data, s
       if (fetcher.second > m_lastSegmentNo) {
         // stop trying to fetch segments that are beyond m_lastSegmentNo
         fetcher.first->cancel();
+        auto segIt1 = m_segmentInfo.find(fetcher.second);
+        if (segIt1 == m_segmentInfo.end()) {
+			continue;
+        }		
+		m_segmentInfo.erase(segIt1);
       }
       else if (fetcher.first->hasError()) { // fetcher.second <= m_lastSegmentNo
         // there was an error while fetching a segment that is part of the content
@@ -152,6 +176,12 @@ PipelineInterestsFixed::handleData(const Interest& interest, const Data& data, s
   if (allSegmentsReceived()) {
     if (!m_options.isQuiet) {
       printSummary();
+	  
+	  time::nanoseconds m_rttAvg = m_assumeTimeElapsed / m_nReceived;
+	  std::cerr << "min/avg/max = " << std::fixed << std::setprecision(3)
+				<< m_rttMax.count() / 1e6 << "/"
+				<< m_rttAvg.count() / 1e6 << "/"
+				<< m_rttMin.count() / 1e6 << " ms\n";
     }
   }
   else {
@@ -177,6 +207,11 @@ void PipelineInterestsFixed::handleFail(const std::string& reason, std::size_t p
       // cancel fetching all segments that follow
       if (fetcher.second > m_segmentFetchers[pipeNo].second) {
         fetcher.first->cancel();
+        auto segIt = m_segmentInfo.find(fetcher.second);
+        if (segIt == m_segmentInfo.end()) {
+			continue;
+        }		
+		m_segmentInfo.erase(segIt);
       }
       else if (fetcher.first->isRunning()) { // fetcher.second <= m_segmentFetchers[pipeNo].second
         areAllFetchersStopped = false;
